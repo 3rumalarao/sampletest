@@ -1,0 +1,211 @@
+#!/bin/bash
+
+# --- Configuration ---
+DEPLOY_DIR="/var/www/html"
+BACKUP_DIR="/var/www/backups"
+SERVICE_USER="sapservice"
+LOG_DIR="/var/log/app_log"  # Directory for log files
+LOG_FILE="$LOG_DIR/deployment_$(date +%Y%m%d_%H%M%S).log" # Log file with date and time in name
+
+# --- Function to log messages ---
+log_message() {
+  timestamp=$(date +%Y-%m-%d_%H:%M:%S)
+  echo "[$timestamp] $1" >> "$LOG_FILE"
+}
+
+# --- Check if running as root ---
+is_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    return 0 # True
+  else
+    return 1 # False
+  fi
+}
+
+# --- Function to execute command and log ---
+execute_command() {
+  local command="$1"
+  local user="${2:-$(whoami)}" # Default to current user if not specified
+
+  log_message "Executing as user '$user': $command"
+  start_time=$(date +%Y-%m-%d_%H:%M:%S)
+  if [ "$user" == "root" ]; then
+    eval "$command" 2>&1 | while IFS= read -r line; do
+      echo "[$start_time] [ROOT] $line" >> "$LOG_FILE"
+    done
+    local result=$?
+  else
+    su - "$user" -c "$command 2>&1" | while IFS= read -r line; do
+      echo "[$start_time] [$user] $line" >> "$LOG_FILE"
+    done
+    local result=$?
+  fi
+  end_time=$(date +%Y-%m-%d_%H:%M:%S)
+  if [ $result -eq 0 ]; then
+    log_message "Command '$command' completed successfully at $end_time"
+  else
+    log_message "Error executing command '$command' at $end_time. Exit code: $result"
+    return 1 # Indicate failure
+  fi
+  return 0 # Indicate success
+}
+
+# --- Check for service user ---
+if id -u "$SERVICE_USER" >/dev/null 2>&1; then
+  USE_SERVICE_USER=true
+  CURRENT_USER="$SERVICE_USER"
+  log_message "Service user '$SERVICE_USER' found."
+else
+  USE_SERVICE_USER=false
+  CURRENT_USER="root"
+  log_message "Service user '$SERVICE_USER' not found. Running commands as root."
+fi
+
+# --- Create Log Directory ---
+if [ ! -d "$LOG_DIR" ]; then
+  execute_command "mkdir -p '$LOG_DIR'" "root" || exit 1
+  execute_command "chown $(whoami):$(whoami) '$LOG_DIR'" "root" || exit 1 # Use whoami for current user
+  execute_command "chmod 755 '$LOG_DIR'" "root" || exit 1
+fi
+
+# --- Create Log File ---
+if [ ! -f "$LOG_FILE" ]; then
+  execute_command "touch '$LOG_FILE'" "root" || exit 1
+  execute_command "chown $(whoami):$(whoami) '$LOG_FILE'" "root" || exit 1 # Use whoami for current user
+  execute_command "chmod 644 '$LOG_FILE'" "root" || exit 1 # More secure permissions for log file
+fi
+
+# --- Get VERSION based on environment ---
+ENVIRONMENT=""
+if [[ -z "$1" ]]; then
+  log_message "Usage: $0 <version_tag_or_branch> [environment]"
+  exit 1
+else
+  VERSION="$1"
+  if [[ ! -z "$2" ]]; then
+    ENVIRONMENT="$2"
+  fi
+fi
+
+if [[ "$ENVIRONMENT" == "prod" ]]; then
+  VERSION_TYPE="tag"
+  VERSION_TAG="$VERSION"
+  BRANCH_NAME=""
+else
+  VERSION_TYPE="branch"
+  BRANCH_NAME="$VERSION"
+  VERSION_TAG=""
+fi
+
+log_message "Deployment started for $VERSION_TYPE '$VERSION' on environment '$ENVIRONMENT'."
+
+# --- Create Backup Directory ---
+execute_command "mkdir -p '$BACKUP_DIR'" "root" || exit 1
+BACKUP_FILE="$BACKUP_DIR/html_backup_$(date +%Y%m%d%H%M%S).tar.gz"
+log_message "Creating backup: $BACKUP_FILE"
+
+execute_command "cd '$DEPLOY_DIR'" "$CURRENT_USER" || exit 1
+execute_command "cd /var/www" "$CURRENT_USER" || exit 1
+
+# 3. Create the tar file
+start_time=$(date +%Y-%m-%d_%H:%M:%S)
+log_message "Backup process started at: $start_time"
+
+execute_command "tar --exclude='html/storage' -czvf '$BACKUP_FILE' 'html'" "root" || {
+    end_time=$(date +%Y-%m-%d_%H:%M:%S)
+    log_message "Error creating backup at: $end_time. See previous log entries for details.";
+    exit 1;
+}
+
+end_time=$(date +%Y-%m-%d_%H:%M:%S)
+log_message "Backup process finished successfully at: $end_time"
+
+# 4. Change back to the deployment directory
+execute_command "cd '$DEPLOY_DIR'" "$CURRENT_USER" || exit 1
+
+log_message "Backup created successfully."
+
+execute_command "git config --global --add safe.directory '$DEPLOY_DIR'" "$CURRENT_USER"
+
+# --- Handle Tag or Branch based on Environment ---
+if [[ "$VERSION_TYPE" == "tag" ]]; then
+  # --- Check if tag exists (local or remote) ---
+  if ! git show-ref --tags "$VERSION_TAG" >/dev/null 2>&1; then
+    log_message "Error: Tag '$VERSION_TAG' not found (locally or remotely)."
+    execute_command "git fetch --tags" "$CURRENT_USER" # Fetch all tags from all remotes
+    if ! git show-ref --tags "$VERSION_TAG" >/dev/null 2>&1; then # Check after fetch
+      log_message "Error: Tag '$VERSION_TAG' still not found after fetching."
+      exit 1  # Exit if still not found
+    else
+      log_message "Tag '$VERSION_TAG' found after fetching."
+    fi
+  fi
+  CHECKOUT_COMMAND="git checkout tags/$VERSION_TAG"
+  TAKE_DOWN_APP=true
+elif [[ "$VERSION_TYPE" == "branch" ]]; then
+  # --- Check if branch exists (local or remote) ---
+  if ! git show-ref "refs/heads/$BRANCH_NAME" >/dev/null 2>&1; then
+    log_message "Error: Branch '$BRANCH_NAME' not found (locally or remotely)."
+    execute_command "git fetch origin '$BRANCH_NAME'" "$CURRENT_USER" # Fetch the specific branch
+    if ! git show-ref "refs/heads/$BRANCH_NAME" >/dev/null 2>&1; then # Check after fetch
+      log_message "Error: Branch '$BRANCH_NAME' still not found after fetching."
+      exit 1  # Exit if still not found
+    else
+      log_message "Branch '$BRANCH_NAME' found after fetching."
+    fi
+  fi
+  CHECKOUT_COMMAND="git checkout '$BRANCH_NAME'"
+  TAKE_DOWN_APP=true
+fi
+
+if $TAKE_DOWN_APP; then # Only take down if a new branch/tag is being checked out
+  execute_command "php artisan down" "$CURRENT_USER"
+fi
+
+if "$USE_SERVICE_USER"; then
+  SERVICE_USER_COMMANDS="
+    cd '$DEPLOY_DIR' || exit 1
+    execute_command 'git fetch' '$SERVICE_USER'
+    execute_command '$CHECKOUT_COMMAND' '$SERVICE_USER'
+    execute_command 'composer install --no-dev --optimize-autoloader' '$SERVICE_USER'
+    execute_command 'php artisan migrate --force' '$SERVICE_USER'
+    execute_command 'php artisan cache:clear' '$SERVICE_USER'
+    execute_command 'php artisan route:clear' '$SERVICE_USER'
+    execute_command 'php artisan config:clear' '$SERVICE_USER'
+    execute_command 'php artisan view:clear' '$SERVICE_USER'
+  "
+  # Execute commands as the service user
+  log_message "Executing application deployment commands as user '$SERVICE_USER'."
+  su - "$SERVICE_USER" -c "$SERVICE_USER_COMMANDS" || { log_message "Error in service user commands"; exit 1; }
+else
+  ROOT_COMMANDS="
+    cd '$DEPLOY_DIR' || exit 1
+    execute_command 'git fetch' 'root'
+    execute_command '$CHECKOUT_COMMAND' 'root'
+    execute_command 'composer install --no-dev --optimize-autoloader' 'root'
+    execute_command 'php artisan migrate --force' 'root'
+    execute_command 'php artisan cache:clear' 'root'
+    execute_command 'php artisan route:clear' 'root'
+    execute_command 'php artisan config:clear' 'root'
+    execute_command 'php artisan view:clear' 'root'
+  "
+  # Execute commands as root
+  log_message "Executing application deployment commands as root."
+  eval "$ROOT_COMMANDS" || { log_message "Error in root commands"; exit 1; }
+fi
+
+# --- Back to Root for service restarts ---
+execute_command "cd '$DEPLOY_DIR'" "root" || exit 1
+log_message "Restarting the supervisor service"
+execute_command "service supervisor restart" "root" || log_message "Warning: Error restarting supervisor service."
+log_message "Restarting the apache2 service"
+execute_command "service apache2 restart" "root" || log_message "Warning: Error restarting apache2 service."
+
+if $TAKE_DOWN_APP; then # Only bring up if it was taken down
+  log_message "Bringing the application online."
+  execute_command "php artisan up" "$CURRENT_USER" || log_message "Error in bringing the application online."
+fi
+
+log_message "Deployment process completed."
+
+exit 0
