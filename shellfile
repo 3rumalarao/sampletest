@@ -6,6 +6,8 @@ BACKUP_DIR="/var/www/backups"
 SERVICE_USER="sapservice"
 LOG_DIR="/var/log/app_log"  # Directory for log files
 LOG_FILE="$LOG_DIR/deployment_$(date +%Y%m%d_%H%M%S).log" # Log file with date and time in name
+S3_LOG_BUCKET="your-log-bucket-name" # Replace with your actual S3 bucket name
+S3_LOG_PREFIX="deployment-logs"      # Optional prefix for log files in S3
 
 # --- Function to log messages ---
 log_message() {
@@ -204,6 +206,14 @@ execute_command "service apache2 restart" "root" || log_message "Warning: Error 
 if $TAKE_DOWN_APP; then # Only bring up if it was taken down
   log_message "Bringing the application online."
   execute_command "php artisan up" "$CURRENT_USER" || log_message "Error in bringing the application online."
+fi
+
+# --- Upload Log File to S3 ---
+log_message "Uploading deployment log to S3://$S3_LOG_BUCKET/$S3_LOG_PREFIX/$ENVIRONMENT/$(basename "$LOG_FILE")"
+if is_root; then
+  aws s3 cp "$LOG_FILE" "s3://$S3_LOG_BUCKET/$S3_LOG_PREFIX/$ENVIRONMENT/$(basename "$LOG_FILE")" || log_message "Error uploading log file to S3."
+else
+  su - "$SERVICE_USER" -c "aws s3 cp '$LOG_FILE' 's3://$S3_LOG_BUCKET/$S3_LOG_PREFIX/$ENVIRONMENT/$(basename \"$LOG_FILE\")'" || log_message "Error uploading log file to S3 as $SERVICE_USER."
 fi
 
 log_message "Deployment process completed."
