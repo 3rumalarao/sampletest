@@ -1,0 +1,72 @@
+        trigger: none # Manual trigger only
+
+        pool:
+          vmImage: ubuntu-latest # This pool is for the Azure Pipelines agent
+
+        parameters:
+        - name: environment
+          displayName: Environment
+          type: string
+          default: dev
+          values:
+          - dev
+          - uat
+          - prod
+        - name: sourceRef
+          displayName: 'Branch (for dev/uat) or Tag (for prod)'
+          type: string
+          default: main
+
+        stages:
+        - stage: Deploy
+          displayName: Deploy to ${{ parameters.environment }}
+          jobs:
+          - job: RunSSMCommand
+            displayName: 'Execute Deployment Script on EC2'
+            steps:
+            - script: echo "Deploying to ${{ parameters.environment }} using ref: ${{ parameters.sourceRef }}"
+              displayName: 'Print Deployment Information'
+
+            - task: AWS-SSM-RunCommand@1
+              displayName: 'Run Deployment Script on EC2 Instances'
+              inputs:
+                awsConnectionName: 'SAPDEVOPS' # Your AWS Service Connection
+                regionName: 'us-east-1' # Your AWS Region
+                documentName: 'AWS-RunShellScript' # Standard AWS SSM document for running shell scripts
+                targets: 'INSTANCE_IDS' # This will be dynamically set based on the environment
+                instanceIds: |
+                  $(PRODUCTION_INSTANCE_IDS) # Placeholder for production instances
+                  $(UAT_INSTANCE_IDS)        # Placeholder for UAT instances
+                  $(DEV_INSTANCE_IDS)        # Placeholder for development instances
+                documentParameters: |
+                  {
+                    "commands": [
+                      "/snap/amazon-ssm-agent/current/your_deployment_script.sh \"${{ parameters.sourceRef }}\""
+                    ]
+                  }
+              env:
+                PRODUCTION_INSTANCE_IDS: 'i-prod-instance1,i-prod-instance2' # Replace with your actual production instance IDs
+                UAT_INSTANCE_IDS: 'i-uat-instance1'                      # Replace with your actual UAT instance IDs
+                DEV_INSTANCE_IDS: 'i-dev-instance1'                      # Replace with your actual development instance IDs
+              continueOnError: true # Allow the task to complete even if there are errors in the script
+
+          - job: DisplayDeploymentLogs
+            displayName: 'Display Deployment Logs'
+            dependsOn: RunSSMCommand
+            steps:
+            - task: AWS-CLI@1
+              displayName: 'Download Deployment Log File'
+              inputs:
+                awsConnectionName: 'SAPDEVOPS' # Your AWS Service Connection
+                regionName: 'us-east-1' # Your AWS Region
+                command: 's3 cp s3://your-log-bucket/${{ parameters.environment }}/deployment_*.log $(Build.ArtifactStagingDirectory)/'
+              condition: succeededOrFailed() # Run this even if the deployment failed
+
+            - script: |
+                echo "##[section] --- Deployment Logs from EC2 ---"
+                if [ -f "$(Build.ArtifactStagingDirectory)/deployment_*.log" ]; then
+                  cat "$(Build.ArtifactStagingDirectory)/deployment_*.log"
+                else
+                  echo "No deployment log file found in the expected location."
+                fi
+              displayName: 'Display Log File Content'
