@@ -85,7 +85,7 @@ ENVIRONMENT="$2"
 if [[ "$ENVIRONMENT" == "prod" ]]; then
   VERSION_TYPE="tag"
   VERSION_TAG="$VERSION"
-  BRANCH_NAME=""
+  BRANCH_NAME="release-$VERSION" # Construct a branch name from the tag
 else
   VERSION_TYPE="branch"
   BRANCH_NAME="$VERSION"
@@ -135,7 +135,8 @@ if [[ "$VERSION_TYPE" == "tag" ]]; then
       log_message "Tag '$VERSION_TAG' found after fetching."
     fi
   fi
-  CHECKOUT_COMMAND="git checkout tags/$VERSION_TAG"
+  # --- Checkout tag and create branch ---
+  CHECKOUT_COMMAND="git checkout tags/$VERSION_TAG -b $BRANCH_NAME"
   TAKE_DOWN_APP=true
 elif [[ "$VERSION_TYPE" == "branch" ]]; then
   # --- Check if branch exists (local or remote) ---
