@@ -59,7 +59,7 @@ stages:
       displayName: "Perform Deployment on EC2"
       inputs:
         awsCredentials: ${{ parameters.awsCredentials }} # Correct property name
-        regionName: ${{ parameters.awsRegion }} # Correct property name
+        region: ${{ parameters.awsRegion }} # Corrected property name: region
         documentName: 'AWS-RunShellScript'
         instanceIds: | # Correct property name
           ${{ parameters.prodInstanceIds }}
@@ -72,24 +72,23 @@ stages:
             ],
             "workingDirectory": "/tmp"
           }
-        # targets: 'INSTANCE_IDS' # Removed incorrect property
-        # targetType: 'InstanceId' # Removed incorrect property
-      env:
-        PRODUCTION_INSTANCE_IDS: ${{ parameters.prodInstanceIds }}
-        UAT_INSTANCE_IDS: ${{ parameters.uatInstanceIds }}
-        DEV_INSTANCE_IDS: ${{ parameters.devInstanceIds }}
       continueOnError: true # Allow the task to complete even if there are errors in the script
 
   - job: DisplayDeploymentLogs
     displayName: 'Display Deployment Logs'
     dependsOn: RunDeploymentScript
     steps:
+    - script: |
+        echo "Setting awsRegion variable to: ${{ parameters.awsRegion }}"
+        echo "##vso[task.setvariable variable=awsRegion]${{ parameters.awsRegion }}"
+      displayName: 'Set AWS Region Variable'
+
     - task: AWSCLI@1 # Corrected task name
       displayName: 'Download Deployment Log File'
       inputs:
         awsCredentials: ${{ parameters.awsCredentials }} # Correct property name
-        regionName: ${{ parameters.awsRegion }} # Correct property name
-        command: 'aws s3 cp s3://${{ parameters.s3LogBucket }}/${{ parameters.s3LogPrefix }}/${{ parameters.environment }}/deployment_*.log $(Build.ArtifactStagingDirectory)/'
+        regionName: $(awsRegion) # Use the variable here
+        awsCliArguments: 'aws s3 cp s3://${{ parameters.s3LogBucket }}/${{ parameters.s3LogPrefix }}/${{ parameters.environment }}/deployment_*.log $(Build.ArtifactStagingDirectory)/' # Corrected property name
       condition: succeededOrFailed() # Run this even if the deployment failed
 
     - script: |
