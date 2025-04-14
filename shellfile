@@ -6,8 +6,9 @@ BACKUP_DIR="/var/www/backups"
 SERVICE_USER="sapservice"
 LOG_DIR="/var/log/app_log"  # Directory for log files
 LOG_FILE="$LOG_DIR/deployment_$(date +%Y%m%d_%H%M%S).log" # Log file with date and time in name
-S3_LOG_BUCKET="your-log-bucket-name" # Replace with your actual S3 bucket name
+S3_LOG_BUCKET="$3" # Environment passed as the third argument
 S3_LOG_PREFIX="deployment-logs"      # Optional prefix for log files in S3
+ENVIRONMENT="$3"
 
 # --- Function to log messages ---
 log_message() {
@@ -77,17 +78,9 @@ if [ ! -f "$LOG_FILE" ]; then
   execute_command "chmod 644 '$LOG_FILE'" "root" || exit 1 # More secure permissions for log file
 fi
 
-# --- Get VERSION based on environment ---
-ENVIRONMENT=""
-if [[ -z "$1" ]]; then
-  log_message "Usage: $0 <version_tag_or_branch> [environment]"
-  exit 1
-else
-  VERSION="$1"
-  if [[ ! -z "$2" ]]; then
-    ENVIRONMENT="$2"
-  fi
-fi
+# --- Get VERSION from the first argument ---
+VERSION="$1"
+ENVIRONMENT="$2"
 
 if [[ "$ENVIRONMENT" == "prod" ]]; then
   VERSION_TYPE="tag"
