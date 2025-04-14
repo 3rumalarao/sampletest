@@ -16,57 +16,88 @@ parameters:
   displayName: 'Branch (for dev/uat) or Tag (for prod)'
   type: string
   default: main
+- name: awsConnectionName
+  displayName: 'AWS Service Connection Name'
+  type: string
+  default: 'YOUR_AWS_SERVICE_CONNECTION_NAME' # Replace with your default connection name
+- name: awsRegion
+  displayName: 'AWS Region'
+  type: string
+  default: 'us-east-1' # Replace with your default AWS region
+- name: s3LogBucket
+  displayName: 'S3 Log Bucket Name'
+  type: string
+  default: 'your-log-bucket-name' # Replace with your S3 bucket name
+- name: s3LogPrefix
+  displayName: 'S3 Log Prefix (optional)'
+  type: string
+  default: 'deployment-logs'
+- name: prodInstanceIds
+  displayName: 'Production EC2 Instance IDs (comma-separated)'
+  type: string
+  default: 'i-prod-instance1,i-prod-instance2' # Replace with your prod instance IDs
+- name: uatInstanceIds
+  displayName: 'UAT EC2 Instance IDs (comma-separated)'
+  type: string
+  default: 'i-uat-instance1' # Replace with your UAT instance IDs
+- name: devInstanceIds
+  displayName: 'Development EC2 Instance IDs (comma-separated)'
+  type: string
+  default: 'i-dev-instance1' # Replace with your dev instance IDs
 
 stages:
 - stage: Deploy
   displayName: Deploy to ${{ parameters.environment }}
   jobs:
-  - job: RunSSMCommand
+  - job: RunDeploymentScript
     displayName: 'Execute Deployment Script on EC2'
     steps:
     - script: echo "Deploying to ${{ parameters.environment }} using ref: ${{ parameters.sourceRef }}"
       displayName: 'Print Deployment Information'
 
-    - task: AWS-SSM-RunCommand@1
-      displayName: 'Run Deployment Script on EC2 Instances'
+    - task: SystemsManagerRunCommand@1
+      displayName: "Perform Deployment on EC2"
       inputs:
-        awsConnectionName: 'SAPDEVOPS' # Your AWS Service Connection
-        regionName: 'us-east-1' # Your AWS Region
-        documentName: 'AWS-RunShellScript' # Standard AWS SSM document for running shell scripts
-        targets: 'INSTANCE_IDS' # This will be dynamically set based on the environment
+        awsConnectionName: ${{ parameters.awsConnectionName }}
+        regionName: ${{ parameters.awsRegion }}
+        documentName: 'AWS-RunShellScript'
+        targets: 'INSTANCE_IDS'
         instanceIds: |
-          $(PRODUCTION_INSTANCE_IDS) # Placeholder for production instances
-          $(UAT_INSTANCE_IDS)        # Placeholder for UAT instances
-          $(DEV_INSTANCE_IDS)        # Placeholder for development instances
+          ${{ parameters.prodInstanceIds }}
+          ${{ parameters.uatInstanceIds }}
+          ${{ parameters.devInstanceIds }}
+        targetType: 'InstanceId'
         documentParameters: |
           {
             "commands": [
-              "/snap/amazon-ssm-agent/current/your_deployment_script.sh \"${{ parameters.sourceRef }}\""
-            ]
+              "/var/snap/amazon-ssm-agent/current/your_deployment_script.sh \"${{ parameters.sourceRef }} ${{ parameters.environment }}\""
+            ],
+            "workingDirectory": "/tmp" # Optional: Specify a working directory
           }
       env:
-        PRODUCTION_INSTANCE_IDS: 'i-prod-instance1,i-prod-instance2' # Replace with your actual production instance IDs
-        UAT_INSTANCE_IDS: 'i-uat-instance1'                      # Replace with your actual UAT instance IDs
-        DEV_INSTANCE_IDS: 'i-dev-instance1'                      # Replace with your actual development instance IDs
+        PRODUCTION_INSTANCE_IDS: ${{ parameters.prodInstanceIds }}
+        UAT_INSTANCE_IDS: ${{ parameters.uatInstanceIds }}
+        DEV_INSTANCE_IDS: ${{ parameters.devInstanceIds }}
       continueOnError: true # Allow the task to complete even if there are errors in the script
 
   - job: DisplayDeploymentLogs
     displayName: 'Display Deployment Logs'
-    dependsOn: RunSSMCommand
+    dependsOn: RunDeploymentScript
     steps:
     - task: AWS-CLI@1
       displayName: 'Download Deployment Log File'
       inputs:
-        awsConnectionName: 'SAPDEVOPS' # Your AWS Service Connection
-        regionName: 'us-east-1' # Your AWS Region
-        command: 's3 cp s3://your-log-bucket/${{ parameters.environment }}/deployment_*.log $(Build.ArtifactStagingDirectory)/'
+        awsConnectionName: ${{ parameters.awsConnectionName }}
+        regionName: ${{ parameters.awsRegion }}
+        command: 's3 cp s3://${{ parameters.s3LogBucket }}/${{ parameters.s3LogPrefix }}/${{ parameters.environment }}/deployment_*.log $(Build.ArtifactStagingDirectory)/'
       condition: succeededOrFailed() # Run this even if the deployment failed
 
     - script: |
-        echo "##[section] --- Deployment Logs from EC2 ---"
-        if [ -f "$(Build.ArtifactStagingDirectory)/deployment_*.log" ]; then
+        echo "##[section] --- Deployment Logs from EC2 (${{ parameters.environment }}) ---"
+        LOG_FILES=$(ls -p "$(Build.ArtifactStagingDirectory)/deployment_*.log" 2>/dev/null | grep -v /)
+        if [ -n "$LOG_FILES" ]; then
           cat "$(Build.ArtifactStagingDirectory)/deployment_*.log"
         else
-          echo "No deployment log file found in the expected location."
+          echo "No deployment log file found in the expected location for ${{ parameters.environment }}."
         fi
       displayName: 'Display Log File Content'
