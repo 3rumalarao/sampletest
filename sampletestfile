@@ -16,7 +16,7 @@ parameters:
   displayName: 'Branch (for dev/uat) or Tag (for prod)'
   type: string
   default: main
-- name: awsConnectionName
+- name: awsCredentials
   displayName: 'AWS Service Connection Name'
   type: string
   default: 'YOUR_AWS_SERVICE_CONNECTION_NAME' # Replace with your default connection name
@@ -58,22 +58,22 @@ stages:
     - task: SystemsManagerRunCommand@1
       displayName: "Perform Deployment on EC2"
       inputs:
-        awsConnectionName: ${{ parameters.awsConnectionName }}
-        regionName: ${{ parameters.awsRegion }}
+        awsCredentials: ${{ parameters.awsCredentials }} # Correct property name
+        regionName: ${{ parameters.awsRegion }} # Correct property name
         documentName: 'AWS-RunShellScript'
-        targets: 'INSTANCE_IDS'
-        instanceIds: |
+        instanceIds: | # Correct property name
           ${{ parameters.prodInstanceIds }}
           ${{ parameters.uatInstanceIds }}
           ${{ parameters.devInstanceIds }}
-        targetType: 'InstanceId'
         documentParameters: |
           {
             "commands": [
               "/var/snap/amazon-ssm-agent/current/your_deployment_script.sh \"${{ parameters.sourceRef }} ${{ parameters.environment }}\""
             ],
-            "workingDirectory": "/tmp" # Optional: Specify a working directory
+            "workingDirectory": "/tmp"
           }
+        # targets: 'INSTANCE_IDS' # Removed incorrect property
+        # targetType: 'InstanceId' # Removed incorrect property
       env:
         PRODUCTION_INSTANCE_IDS: ${{ parameters.prodInstanceIds }}
         UAT_INSTANCE_IDS: ${{ parameters.uatInstanceIds }}
@@ -84,12 +84,12 @@ stages:
     displayName: 'Display Deployment Logs'
     dependsOn: RunDeploymentScript
     steps:
-    - task: AWS-CLI@1
+    - task: AWSCLI@1 # Corrected task name
       displayName: 'Download Deployment Log File'
       inputs:
-        awsConnectionName: ${{ parameters.awsConnectionName }}
-        regionName: ${{ parameters.awsRegion }}
-        command: 's3 cp s3://${{ parameters.s3LogBucket }}/${{ parameters.s3LogPrefix }}/${{ parameters.environment }}/deployment_*.log $(Build.ArtifactStagingDirectory)/'
+        awsCredentials: ${{ parameters.awsCredentials }} # Correct property name
+        regionName: ${{ parameters.awsRegion }} # Correct property name
+        command: 'aws s3 cp s3://${{ parameters.s3LogBucket }}/${{ parameters.s3LogPrefix }}/${{ parameters.environment }}/deployment_*.log $(Build.ArtifactStagingDirectory)/'
       condition: succeededOrFailed() # Run this even if the deployment failed
 
     - script: |
