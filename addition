@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# ... (Your existing shell script) ...
+
+# --- Upload Log File to S3 ---
+log_message "Uploading deployment log to S3://$S3_LOG_BUCKET/$S3_LOG_PREFIX/$ENVIRONMENT/$(basename "$LOG_FILE")"
+if is_root; then
+  aws s3 cp "$LOG_FILE" "s3://$S3_LOG_BUCKET/$S3_LOG_PREFIX/$ENVIRONMENT/$(basename "$LOG_FILE")" || log_message "Error uploading log file to S3."
+else
+  su - "$SERVICE_USER" -c "aws s3 cp '$LOG_FILE' 's3://$S3_LOG_BUCKET/$S3_LOG_PREFIX/$ENVIRONMENT/$(basename \"$LOG_FILE\")'" || log_message "Error uploading log file to S3 as $SERVICE_USER."
+fi
+
+# --- Export the Log Filename ---
+echo "##vso[task.setvariable variable=LOG_FILENAME;isOutput=true]$(basename "$LOG_FILE")"
+
+log_message "Deployment process completed."
+
+exit 0
