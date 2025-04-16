@@ -1,7 +1,5 @@
-trigger: none # Manual trigger only
-
 pool:
-  vmImage: ubuntu-latest # This pool is for the Azure Pipelines agent
+  vmImage: 'ubuntu-latest'
 
 parameters:
 - name: environment
@@ -19,15 +17,15 @@ parameters:
 - name: awsCredentials
   displayName: 'AWS Service Connection Name'
   type: string
-  default: 'YOUR_AWS_SERVICE_CONNECTION_NAME' # Replace with your default connection name
+  default: 'YOUR_AWS_SERVICE_CONNECTION_NAME'
 - name: awsRegion
   displayName: 'AWS Region'
   type: string
-  default: 'us-east-1' # Replace with your default AWS region
+  default: 'us-east-1'
 - name: s3LogBucket
   displayName: 'S3 Log Bucket Name'
   type: string
-  default: 'your-log-bucket-name' # Replace with your S3 bucket name
+  default: 'your-log-bucket-name'
 - name: s3LogPrefix
   displayName: 'S3 Log Prefix (optional)'
   type: string
@@ -35,15 +33,15 @@ parameters:
 - name: prodInstanceIds
   displayName: 'Production EC2 Instance IDs (comma-separated)'
   type: string
-  default: 'i-prod-instance1,i-prod-instance2' # Replace with your prod instance IDs
+  default: 'i-prod-instance1,i-prod-instance2'
 - name: uatInstanceIds
   displayName: 'UAT EC2 Instance IDs (comma-separated)'
   type: string
-  default: 'i-uat-instance1' # Replace with your UAT instance IDs
+  default: 'i-uat-instance1'
 - name: devInstanceIds
   displayName: 'Development EC2 Instance IDs (comma-separated)'
   type: string
-  default: 'i-dev-instance1' # Replace with your dev instance IDs
+  default: 'i-dev-instance1'
 
 stages:
 - stage: Deploy
@@ -55,48 +53,42 @@ stages:
     - script: echo "Deploying to ${{ parameters.environment }} using ref: ${{ parameters.sourceRef }}"
       displayName: 'Print Deployment Information'
 
-    - task: SystemsManagerRunCommand@1
+    - task: AWSSystemsManagerRunCommand@1
+      name: RunCommand
       displayName: "Perform Deployment on EC2"
       inputs:
-        awsCredentials: ${{ parameters.awsCredentials }} # Correct property name
-        region: ${{ parameters.awsRegion }} # Corrected property name: region
+        awsCredentials: ${{ parameters.awsCredentials }}
+        region: ${{ parameters.awsRegion }}
         documentName: 'AWS-RunShellScript'
-        instanceIds: | # Correct property name
-          ${{ parameters.prodInstanceIds }}
-          ${{ parameters.uatInstanceIds }}
-          ${{ parameters.devInstanceIds }}
-        documentParameters: |
-          {
-            "commands": [
-              "/var/snap/amazon-ssm-agent/current/your_deployment_script.sh \"${{ parameters.sourceRef }} ${{ parameters.environment }}\""
-            ],
-            "workingDirectory": "/tmp"
-          }
-      continueOnError: true # Allow the task to complete even if there are errors in the script
+        instanceIds: ${{ format(
+            '{0}',
+            parameters.environment == 'dev' ? parameters.devInstanceIds :
+            parameters.environment == 'uat' ? parameters.uatInstanceIds :
+            parameters.prodInstanceIds
+          ) }}
+        comment: 'Running deployment script'
+        parameters:
+          commands:
+          - "/var/snap/amazon-ssm-agent/current/your_deployment_script.sh \"${{ parameters.sourceRef }} ${{ parameters.environment }}\""
+          workingDirectory:
+          - "/tmp"
+        timeoutSeconds: 600
 
-  - job: DisplayDeploymentLogs
-    displayName: 'Display Deployment Logs'
-    dependsOn: RunDeploymentScript
-    steps:
-    - script: |
-        echo "Setting awsRegion variable to: ${{ parameters.awsRegion }}"
-        echo "##vso[task.setvariable variable=awsRegion]${{ parameters.awsRegion }}"
-      displayName: 'Set AWS Region Variable'
-
-    - task: AWSCLI@1 # Corrected task name
+    - task: AWSCLI@1
       displayName: 'Download Deployment Log File'
       inputs:
-        awsCredentials: ${{ parameters.awsCredentials }} # Correct property name
-        regionName: $(awsRegion) # Use the variable here
-        awsCliArguments: 'aws s3 cp s3://${{ parameters.s3LogBucket }}/${{ parameters.s3LogPrefix }}/${{ parameters.environment }}/deployment_*.log $(Build.ArtifactStagingDirectory)/' # Corrected property name
-      condition: succeededOrFailed() # Run this even if the deployment failed
+        awsCredentials: ${{ parameters.awsCredentials }}
+        regionName: ${{ parameters.awsRegion }}
+        awsCommand: 's3'
+        awsSubCommand: 'cp'
+        awsCliArguments: 's3://${{ parameters.s3LogBucket }}/${{ parameters.s3LogPrefix }}/${{ parameters.environment }}/deployment.log $(Build.ArtifactStagingDirectory)/deployment.log'
+      condition: succeededOrFailed()
 
     - script: |
         echo "##[section] --- Deployment Logs from EC2 (${{ parameters.environment }}) ---"
-        LOG_FILES=$(ls -p "$(Build.ArtifactStagingDirectory)/deployment_*.log" 2>/dev/null | grep -v /)
-        if [ -n "$LOG_FILES" ]; then
-          cat "$(Build.ArtifactStagingDirectory)/deployment_*.log"
+        if [ -f "$(Build.ArtifactStagingDirectory)/deployment.log" ]; then
+          cat "$(Build.ArtifactStagingDirectory)/deployment.log"
         else
-          echo "No deployment log file found in the expected location for ${{ parameters.environment }}."
+          echo "No deployment log file found."
         fi
       displayName: 'Display Log File Content'
