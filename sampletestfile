@@ -92,8 +92,7 @@ stages:
         regionName: ${{ parameters.awsRegion }}
         awsCommand: 's3'
         awsSubCommand: 'cp'
-        awsCliArguments: |
-          s3://${{ parameters.s3LogBucket }}/${{ parameters.s3LogPrefix }}/${{ parameters.environment }}/deployment.log $(Build.ArtifactStagingDirectory)/deployment.log
+        awsArguments: 's3 cp s3://${{ parameters.s3LogBucket }}/${{ parameters.s3LogPrefix }}/${{ parameters.environment }}/deployment.log $(Build.ArtifactStagingDirectory)/deployment.log'
       condition: succeededOrFailed()
 
     - script: |
