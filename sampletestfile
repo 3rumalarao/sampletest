@@ -53,19 +53,14 @@ stages:
     - script: echo "Deploying to ${{ parameters.environment }} using ref: ${{ parameters.sourceRef }}"
       displayName: 'Print Deployment Information'
 
-    - task: AWSSystemsManagerRunCommand@1
+    - task: SystemsManagerRunCommand@1
       name: RunCommand
       displayName: "Perform Deployment on EC2"
       inputs:
         awsCredentials: ${{ parameters.awsCredentials }}
         region: ${{ parameters.awsRegion }}
         documentName: 'AWS-RunShellScript'
-        instanceIds: ${{ format(
-            '{0}',
-            parameters.environment == 'dev' ? parameters.devInstanceIds :
-            parameters.environment == 'uat' ? parameters.uatInstanceIds :
-            parameters.prodInstanceIds
-          ) }}
+        instanceIds: "${{ parameters.environment == 'dev' ? parameters.devInstanceIds : parameters.environment == 'uat' ? parameters.uatInstanceIds : parameters.prodInstanceIds }}"
         comment: 'Running deployment script'
         parameters:
           commands:
