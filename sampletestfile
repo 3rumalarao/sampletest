@@ -66,6 +66,18 @@ stages:
         echo "Deploying to ${{ parameters.environment }} using ref: ${{ parameters.sourceRef }}"
       displayName: 'Print Deployment Information'
 
+    - ${{ if eq(parameters.environment, 'dev') }}:
+      - script: echo "##vso[task.setvariable variable=targetInstanceIds]${{ parameters.devInstanceIds }}"
+        displayName: 'Set Dev Instance IDs'
+
+    - ${{ if eq(parameters.environment, 'uat') }}:
+      - script: echo "##vso[task.setvariable variable=targetInstanceIds]${{ parameters.uatInstanceIds }}"
+        displayName: 'Set UAT Instance IDs'
+
+    - ${{ if eq(parameters.environment, 'prod') }}:
+      - script: echo "##vso[task.setvariable variable=targetInstanceIds]${{ parameters.prodInstanceIds }}"
+        displayName: 'Set Prod Instance IDs'
+
     - task: SystemsManagerRunCommand@1
       name: RunCommand
       displayName: "Perform Deployment on EC2"
@@ -73,7 +85,17 @@ stages:
         awsCredentials: ${{ parameters.awsCredentials }}
         regionName: ${{ parameters.awsRegion }}
         documentName: 'AWS-RunShellScript'
-        instanceIds: "${{ parameters.environment == 'dev' ? parameters.devInstanceIds : parameters.environment == 'uat' ? parameters.uatInstanceIds : parameters.prodInstanceIds }}"
+        instanceIds: '$(targetInstanceIds)'
+        comment: 'Running deployment script'
+        documentParameters: >
+          {
+            "commands": [
+              "/var/snap/amazon-ssm-agent/current/your_deployment_script.sh \"${{ parameters.sourceRef }} ${{ parameters.environment }}\""
+            ],
+            "workingDirectory": [
+              "/tmp"
+            ]
+          }
         comment: 'Running deployment script'
         documentParameters: >
           {
