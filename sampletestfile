@@ -75,11 +75,15 @@ stages:
         documentName: 'AWS-RunShellScript'
         instanceIds: "${{ parameters.environment == 'dev' ? parameters.devInstanceIds : parameters.environment == 'uat' ? parameters.uatInstanceIds : parameters.prodInstanceIds }}"
         comment: 'Running deployment script'
-        documentParameters: '{
-          "commands": ["/var/snap/amazon-ssm-agent/current/your_deployment_script.sh \"${{ parameters.sourceRef }} ${{ parameters.environment }}\""],
-          "workingDirectory": ["/tmp"]
-        }'
-          - "/tmp"
+        documentParameters: >
+          {
+            "commands": [
+              "/var/snap/amazon-ssm-agent/current/your_deployment_script.sh \"${{ parameters.sourceRef }} ${{ parameters.environment }}\""
+            ],
+            "workingDirectory": [
+              "/tmp"
+            ]
+          }
 
     - task: AWSCLI@1
       displayName: 'Download Deployment Log File'
