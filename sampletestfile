@@ -95,12 +95,7 @@ stages:
             "workingDirectory": [
               "/tmp"
             ]
-          }
-        comment: 'Running deployment script'
-        documentParameters: >
-          {
-            "commands": [
-              "/var/snap/amazon-ssm-agent/current/your_deployment_script.sh \"${{ parameters.sourceRef }} ${{ parameters.environment }}\""
+          }} ${{ parameters.environment }}\""
             ],
             "workingDirectory": [
               "/tmp"
