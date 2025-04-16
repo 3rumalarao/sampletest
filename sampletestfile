@@ -22,6 +22,18 @@ parameters:
   displayName: 'AWS Region'
   type: string
   default: 'us-east-1'
+  values:
+    - us-east-1
+    - us-east-2
+    - us-west-1
+    - us-west-2
+    - eu-west-1
+    - eu-central-1
+    - ap-south-1
+    - ap-northeast-1
+    - ap-northeast-2
+    - ap-southeast-1
+    - ap-southeast-2
 - name: s3LogBucket
   displayName: 'S3 Log Bucket Name'
   type: string
@@ -50,7 +62,8 @@ stages:
   - job: RunDeploymentScript
     displayName: 'Execute Deployment Script on EC2'
     steps:
-    - script: echo "Deploying to ${{ parameters.environment }} using ref: ${{ parameters.sourceRef }}"
+    - script: |
+        echo "Deploying to ${{ parameters.environment }} using ref: ${{ parameters.sourceRef }}"
       displayName: 'Print Deployment Information'
 
     - task: SystemsManagerRunCommand@1
@@ -58,16 +71,15 @@ stages:
       displayName: "Perform Deployment on EC2"
       inputs:
         awsCredentials: ${{ parameters.awsCredentials }}
-        region: ${{ parameters.awsRegion }}
+        regionName: ${{ parameters.awsRegion }}
         documentName: 'AWS-RunShellScript'
         instanceIds: "${{ parameters.environment == 'dev' ? parameters.devInstanceIds : parameters.environment == 'uat' ? parameters.uatInstanceIds : parameters.prodInstanceIds }}"
         comment: 'Running deployment script'
-        parameters:
-          commands:
-          - "/var/snap/amazon-ssm-agent/current/your_deployment_script.sh \"${{ parameters.sourceRef }} ${{ parameters.environment }}\""
-          workingDirectory:
+        documentParameters: '{
+          "commands": ["/var/snap/amazon-ssm-agent/current/your_deployment_script.sh \"${{ parameters.sourceRef }} ${{ parameters.environment }}\""],
+          "workingDirectory": ["/tmp"]
+        }'
           - "/tmp"
-        timeoutSeconds: 600
 
     - task: AWSCLI@1
       displayName: 'Download Deployment Log File'
@@ -76,7 +88,8 @@ stages:
         regionName: ${{ parameters.awsRegion }}
         awsCommand: 's3'
         awsSubCommand: 'cp'
-        awsCliArguments: 's3://${{ parameters.s3LogBucket }}/${{ parameters.s3LogPrefix }}/${{ parameters.environment }}/deployment.log $(Build.ArtifactStagingDirectory)/deployment.log'
+        awsCliArguments: |
+          s3://${{ parameters.s3LogBucket }}/${{ parameters.s3LogPrefix }}/${{ parameters.environment }}/deployment.log $(Build.ArtifactStagingDirectory)/deployment.log
       condition: succeededOrFailed()
 
     - script: |
