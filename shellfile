@@ -5,155 +5,138 @@ set -e  # Exit immediately on any command failure
 # CONFIGURATION SECTION
 ################################################################################
 
-# Directories and file paths
 DEPLOY_DIR="/var/www/html"
 BACKUP_DIR="/var/www/backups"
 SERVICE_USER="sapservice"
 LOG_DIR="/var/log/app_log"
 LOG_FILE="$LOG_DIR/deployment_$(date +%Y%m%d).log"
 
-# --- Parameter Check ---
-# Usage: your_deployment_script.sh <version_tag> <environment>
-#   version_tag: For prod, a tag is used. For dev/qa/uat, the tag is used to create a branch.
-#   environment: One of dev, qa, uat, or prod.
+################################################################################
+# PARAMETER VALIDATION
+################################################################################
+
 if [ "$#" -lt 2 ]; then
   echo "Usage: $0 <version_tag> <environment>" | tee -a "$LOG_FILE"
   exit 1
 fi
 
 VERSION_TAG="$1"
-ENVIRONMENT="$2"  # Expected values: dev, qa, uat, prod
+ENVIRONMENT="$2"  # dev, qa, uat, prod
 
 ################################################################################
 # SETUP LOGGING
 ################################################################################
 
-# Create the log directory and file if they do not exist
 mkdir -p "$LOG_DIR"
 chmod 755 "$LOG_DIR"
-if [ ! -f "$LOG_FILE" ]; then
-  touch "$LOG_FILE"
-  chmod 777 "$LOG_FILE"
-fi
+touch "$LOG_FILE"
+chmod 666 "$LOG_FILE"
 
-# Logging function: writes messages with a timestamp to both STDOUT and the log file.
 log_message() {
   local timestamp
   timestamp=$(date +%Y-%m-%d_%H:%M:%S)
   echo "[$timestamp] $1" | tee -a "$LOG_FILE"
 }
 
-log_message "=== Deployment script started for ENV=$ENVIRONMENT, VERSION_TAG=$VERSION_TAG ==="
+log_message "=== Deployment started for ENV=$ENVIRONMENT, VERSION_TAG=$VERSION_TAG ==="
 
 ################################################################################
 # DETERMINE EXECUTION USER
 ################################################################################
 
-# Use the sapservice account if it exists; otherwise, run as root.
 if id "$SERVICE_USER" &>/dev/null; then
   EXEC_USER="$SERVICE_USER"
-  log_message "Service account '$SERVICE_USER' found. Deployment will use this account."
+  log_message "Service user '$SERVICE_USER' found. Proceeding with this user."
 else
   EXEC_USER="root"
-  log_message "Service account '$SERVICE_USER' not found. Deployment will use root."
+  log_message "Service user '$SERVICE_USER' not found. Proceeding with root."
 fi
 
 ################################################################################
-# CREATE A BACKUP
+# BACKUP EXISTING DEPLOYMENT
 ################################################################################
 
-mkdir -p "$BACKUP_DIR" || { log_message "Error: Could not create backup directory"; exit 1; }
+mkdir -p "$BACKUP_DIR"
 BACKUP_FILE="$BACKUP_DIR/html_backup_$(date +%Y%m%d%H%M%S).tar.gz"
-log_message "Creating backup: $BACKUP_FILE"
+log_message "Backing up existing deployment to $BACKUP_FILE"
 
-# Change directories and create the backup archive (excluding any 'storage' directory)
-cd "$DEPLOY_DIR" || { log_message "Error: Cannot change to deploy directory $DEPLOY_DIR"; exit 1; }
 cd /var/www || { log_message "Error: Cannot change to /var/www"; exit 1; }
-start_time=$(date +%Y-%m-%d_%H:%M:%S)
-log_message "Backup process started at: $start_time"
-tar --exclude='html/storage' -czvf "$BACKUP_FILE" "html" 2>&1 | tee -a "$LOG_FILE" || {
-  log_message "Error: Backup creation failed. Aborting deployment."
-  exit 1
-}
-end_time=$(date +%Y-%m-%d_%H:%M:%S)
-log_message "Backup process finished at: $end_time"
-cd "$DEPLOY_DIR" || { log_message "Error: Cannot change back to deploy directory $DEPLOY_DIR"; exit 1; }
+tar --exclude='html/storage' -czvf "$BACKUP_FILE" html 2>&1 | tee -a "$LOG_FILE"
+cd "$DEPLOY_DIR" || { log_message "Error: Cannot return to deploy directory"; exit 1; }
 
 ################################################################################
-# GIT OPERATIONS (BRANCH for non-prod, TAG for prod)
+# GIT BRANCH/TAG CHECKOUT
 ################################################################################
 
-TAKE_DOWN_APP=false  # Flag for taking the app offline if needed
+TAKE_DOWN_APP=false
+CHECKOUT_COMMAND=""
+
+cd "$DEPLOY_DIR" || { log_message "Error: Cannot cd into $DEPLOY_DIR"; exit 1; }
 
 if [ "$ENVIRONMENT" != "prod" ]; then
-  # For dev/qa/uat, create (or check out) a branch named as <version_tag>-branch.
   BRANCH_NAME="${VERSION_TAG}-branch"
   if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
-    log_message "Branch '$BRANCH_NAME' exists. Checking it out..."
+    log_message "Checking out existing branch $BRANCH_NAME"
     CHECKOUT_COMMAND="git checkout $BRANCH_NAME"
   else
-    log_message "Creating branch '$BRANCH_NAME' from tag '$VERSION_TAG'..."
+    log_message "Creating branch $BRANCH_NAME from tag $VERSION_TAG"
     CHECKOUT_COMMAND="git checkout tags/$VERSION_TAG -b $BRANCH_NAME"
     TAKE_DOWN_APP=true
   fi
 else
-  # For production, verify that the tag exists and use it directly.
-  if ! git show-ref --tags "$VERSION_TAG" >/dev/null 2>&1; then
-    log_message "Tag '$VERSION_TAG' not found locally. Fetching tags..."
+  if ! git rev-parse "$VERSION_TAG" >/dev/null 2>&1; then
+    log_message "Tag $VERSION_TAG not found. Fetching..."
     git fetch --tags
-    if ! git show-ref --tags "$VERSION_TAG" >/dev/null 2>&1; then
-      log_message "Error: Tag '$VERSION_TAG' still not found. Aborting deployment."
+    if ! git rev-parse "$VERSION_TAG" >/dev/null 2>&1; then
+      log_message "Tag $VERSION_TAG still not found. Aborting."
       exit 1
     fi
   fi
-  log_message "Checking out tag '$VERSION_TAG'..."
+  log_message "Checking out production tag $VERSION_TAG"
   CHECKOUT_COMMAND="git checkout tags/$VERSION_TAG"
 fi
 
 ################################################################################
-# TAKE THE APPLICATION DOWN (IF NECESSARY)
+# APP DOWN (if required)
 ################################################################################
 
 if $TAKE_DOWN_APP; then
-  log_message "Taking the application down..."
+  log_message "Taking app offline for branch creation"
   php artisan down 2>&1 | tee -a "$LOG_FILE"
 fi
 
 ################################################################################
-# DEPLOYMENT COMMANDS BLOCK
+# DEPLOYMENT COMMAND EXECUTION
 ################################################################################
 
-# Build the block of commands to be executed (as either the service user or root).
-DEPLOY_CMDS=$(cat <<'EOF'
+DEPLOY_CMDS=$(cat <<EOF
+#!/bin/bash
 set -e
 log_message() {
   local ts
-  ts=$(date +%Y-%m-%d_%H:%M:%S)
-  echo "[$ts] $1" | tee -a "'"$LOG_FILE"'"
+  ts=\$(date +%Y-%m-%d_%H:%M:%S)
+  echo "[\$ts] \$1" | tee -a "$LOG_FILE"
 }
-cd "'"$DEPLOY_DIR"'" || { log_message "Error: Cannot change directory"; exit 1; }
-log_message "Running: git fetch"
-git fetch 2>&1 | tee -a "'"$LOG_FILE"'"
-log_message "Executing checkout command: '"$CHECKOUT_COMMAND"'"
-'"$CHECKOUT_COMMAND"' 2>&1 | tee -a "'"$LOG_FILE"'"
-log_message "Running: composer install"
-composer install 2>&1 | tee -a "'"$LOG_FILE"'"
-log_message "Running: php artisan migrate"
-php artisan migrate 2>&1 | tee -a "'"$LOG_FILE"'"
-log_message "Clearing cache, routes, config, and views"
-php artisan cache:clear 2>&1 | tee -a "'"$LOG_FILE"'"
-php artisan route:clear 2>&1 | tee -a "'"$LOG_FILE"'"
-php artisan config:clear 2>&1 | tee -a "'"$LOG_FILE"'"
-php artisan view:clear 2>&1 | tee -a "'"$LOG_FILE"'"
+cd "$DEPLOY_DIR" || { log_message "Cannot cd into deploy dir"; exit 1; }
+log_message "Fetching latest from Git"
+git fetch 2>&1 | tee -a "$LOG_FILE"
+log_message "Executing: $CHECKOUT_COMMAND"
+$CHECKOUT_COMMAND 2>&1 | tee -a "$LOG_FILE"
+log_message "Running composer install"
+composer install --no-interaction --prefer-dist --optimize-autoloader 2>&1 | tee -a "$LOG_FILE"
+log_message "Running database migrations"
+php artisan migrate --force 2>&1 | tee -a "$LOG_FILE"
+log_message "Clearing Laravel caches"
+php artisan cache:clear && php artisan route:clear && php artisan config:clear && php artisan view:clear 2>&1 | tee -a "$LOG_FILE"
 EOF
 )
 
-# Execute deployment commands under the correct user
+# Run commands with appropriate user
 if [ "$EXEC_USER" = "root" ]; then
-  log_message "Executing deployment commands as root"
+  log_message "Running deployment commands as root"
   bash -c "$DEPLOY_CMDS"
 else
-  log_message "Executing deployment commands as service user: $EXEC_USER"
+  log_message "Running deployment commands as $EXEC_USER"
   su - "$EXEC_USER" -c "$DEPLOY_CMDS"
 fi
 
@@ -161,20 +144,19 @@ fi
 # RESTART SERVICES
 ################################################################################
 
-log_message "Restarting supervisor service"
-service supervisor restart 2>&1 | tee -a "$LOG_FILE" || { log_message "Error restarting supervisor service"; exit 1; }
-log_message "Restarting apache2 service"
-service apache2 restart 2>&1 | tee -a "$LOG_FILE" || { log_message "Error restarting apache2 service"; exit 1; }
+log_message "Restarting services"
+service supervisor restart 2>&1 | tee -a "$LOG_FILE" || log_message "Supervisor restart failed"
+service apache2 restart 2>&1 | tee -a "$LOG_FILE" || log_message "Apache restart failed"
 
 if $TAKE_DOWN_APP; then
-  log_message "Bringing the application back online..."
-  php artisan up 2>&1 | tee -a "$LOG_FILE" || { log_message "Error: Failed to bring the application online"; exit 1; }
+  log_message "Bringing app back online"
+  php artisan up 2>&1 | tee -a "$LOG_FILE" || { log_message "Failed to bring app online"; exit 1; }
 fi
 
 ################################################################################
-# FINAL LOG DISPLAY
+# DISPLAY FINAL LOG
 ################################################################################
 
-log_message "Deployment completed. Displaying complete log contents:"
+log_message "Deployment finished. Showing full log:"
 cat "$LOG_FILE"
 exit 0
