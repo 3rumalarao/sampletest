@@ -1,8 +1,8 @@
 #!/bin/bash
-set -e  # Exit immediately on any command failure
+set -e
 
 ################################################################################
-# CONFIGURATION SECTION
+# CONFIGURATION
 ################################################################################
 
 DEPLOY_DIR="/var/www/html"
@@ -21,10 +21,10 @@ if [ "$#" -lt 2 ]; then
 fi
 
 VERSION_TAG="$1"
-ENVIRONMENT="$2"  # dev, qa, uat, prod
+ENVIRONMENT="$2"
 
 ################################################################################
-# SETUP LOGGING
+# LOGGING SETUP
 ################################################################################
 
 mkdir -p "$LOG_DIR"
@@ -46,117 +46,112 @@ log_message "=== Deployment started for ENV=$ENVIRONMENT, VERSION_TAG=$VERSION_T
 
 if id "$SERVICE_USER" &>/dev/null; then
   EXEC_USER="$SERVICE_USER"
-  log_message "Service user '$SERVICE_USER' found. Proceeding with this user."
+  log_message "Using service user '$SERVICE_USER' for application deployment"
 else
   EXEC_USER="root"
-  log_message "Service user '$SERVICE_USER' not found. Proceeding with root."
+  log_message "Service user not found. Proceeding as root"
 fi
 
 ################################################################################
-# BACKUP EXISTING DEPLOYMENT
+# BACKUP
 ################################################################################
 
 mkdir -p "$BACKUP_DIR"
 BACKUP_FILE="$BACKUP_DIR/html_backup_$(date +%Y%m%d%H%M%S).tar.gz"
-log_message "Backing up existing deployment to $BACKUP_FILE"
+log_message "Creating backup: $BACKUP_FILE"
 
-cd /var/www || { log_message "Error: Cannot change to /var/www"; exit 1; }
+cd /var/www || { log_message "Error: Cannot cd to /var/www"; exit 1; }
 tar --exclude='html/storage' -czvf "$BACKUP_FILE" html 2>&1 | tee -a "$LOG_FILE"
-cd "$DEPLOY_DIR" || { log_message "Error: Cannot return to deploy directory"; exit 1; }
 
 ################################################################################
-# GIT BRANCH/TAG CHECKOUT
+# PREPARE GIT CHECKOUT COMMAND
 ################################################################################
 
 TAKE_DOWN_APP=false
 CHECKOUT_COMMAND=""
 
-cd "$DEPLOY_DIR" || { log_message "Error: Cannot cd into $DEPLOY_DIR"; exit 1; }
-
 if [ "$ENVIRONMENT" != "prod" ]; then
   BRANCH_NAME="${VERSION_TAG}-branch"
-  if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
-    log_message "Checking out existing branch $BRANCH_NAME"
+  if sudo -u "$EXEC_USER" git -C "$DEPLOY_DIR" show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+    log_message "Branch '$BRANCH_NAME' exists. Will checkout."
     CHECKOUT_COMMAND="git checkout $BRANCH_NAME"
   else
-    log_message "Creating branch $BRANCH_NAME from tag $VERSION_TAG"
+    log_message "Creating branch '$BRANCH_NAME' from tag '$VERSION_TAG'"
     CHECKOUT_COMMAND="git checkout tags/$VERSION_TAG -b $BRANCH_NAME"
     TAKE_DOWN_APP=true
   fi
 else
-  if ! git rev-parse "$VERSION_TAG" >/dev/null 2>&1; then
-    log_message "Tag $VERSION_TAG not found. Fetching..."
-    git fetch --tags
-    if ! git rev-parse "$VERSION_TAG" >/dev/null 2>&1; then
-      log_message "Tag $VERSION_TAG still not found. Aborting."
+  if ! sudo -u "$EXEC_USER" git -C "$DEPLOY_DIR" rev-parse "$VERSION_TAG" >/dev/null 2>&1; then
+    log_message "Tag '$VERSION_TAG' not found locally. Fetching..."
+    sudo -u "$EXEC_USER" git -C "$DEPLOY_DIR" fetch --tags
+    if ! sudo -u "$EXEC_USER" git -C "$DEPLOY_DIR" rev-parse "$VERSION_TAG" >/dev/null 2>&1; then
+      log_message "Tag '$VERSION_TAG' still not found. Aborting."
       exit 1
     fi
   fi
-  log_message "Checking out production tag $VERSION_TAG"
+  log_message "Will checkout production tag: $VERSION_TAG"
   CHECKOUT_COMMAND="git checkout tags/$VERSION_TAG"
 fi
 
 ################################################################################
-# APP DOWN (if required)
+# TAKE APP DOWN IF NEEDED
 ################################################################################
 
 if $TAKE_DOWN_APP; then
-  log_message "Taking app offline for branch creation"
-  php artisan down 2>&1 | tee -a "$LOG_FILE"
+  log_message "Putting application into maintenance mode..."
+  sudo -u "$EXEC_USER" php "$DEPLOY_DIR/artisan" down 2>&1 | tee -a "$LOG_FILE"
 fi
 
 ################################################################################
-# DEPLOYMENT COMMAND EXECUTION
+# DEPLOYMENT COMMANDS AS SERVICE USER
 ################################################################################
 
 DEPLOY_CMDS=$(cat <<EOF
 #!/bin/bash
 set -e
-log_message() {
-  local ts
-  ts=\$(date +%Y-%m-%d_%H:%M:%S)
-  echo "[\$ts] \$1" | tee -a "$LOG_FILE"
+cd "$DEPLOY_DIR"
+log() {
+  echo "[$(date +%Y-%m-%d_%H:%M:%S)] \$1" | tee -a "$LOG_FILE"
 }
-cd "$DEPLOY_DIR" || { log_message "Cannot cd into deploy dir"; exit 1; }
-log_message "Fetching latest from Git"
-git fetch 2>&1 | tee -a "$LOG_FILE"
-log_message "Executing: $CHECKOUT_COMMAND"
-$CHECKOUT_COMMAND 2>&1 | tee -a "$LOG_FILE"
-log_message "Running composer install"
-composer install --no-interaction --prefer-dist --optimize-autoloader 2>&1 | tee -a "$LOG_FILE"
-log_message "Running database migrations"
-php artisan migrate --force 2>&1 | tee -a "$LOG_FILE"
-log_message "Clearing Laravel caches"
-php artisan cache:clear && php artisan route:clear && php artisan config:clear && php artisan view:clear 2>&1 | tee -a "$LOG_FILE"
+log "Fetching latest changes"
+git fetch
+log "Checking out: $CHECKOUT_COMMAND"
+$CHECKOUT_COMMAND
+log "Installing dependencies"
+composer install --no-interaction --prefer-dist --optimize-autoloader
+log "Running migrations"
+php artisan migrate --force
+log "Clearing cache"
+php artisan cache:clear
+php artisan route:clear
+php artisan config:clear
+php artisan view:clear
 EOF
 )
 
-# Run commands with appropriate user
-if [ "$EXEC_USER" = "root" ]; then
-  log_message "Running deployment commands as root"
-  bash -c "$DEPLOY_CMDS"
-else
-  log_message "Running deployment commands as $EXEC_USER"
-  su - "$EXEC_USER" -c "$DEPLOY_CMDS"
-fi
+echo "$DEPLOY_CMDS" > /tmp/deploy_tmp.sh
+chmod +x /tmp/deploy_tmp.sh
+log_message "Executing application deployment as $EXEC_USER"
+sudo -u "$EXEC_USER" bash /tmp/deploy_tmp.sh || { log_message "Deployment failed"; exit 1; }
+rm -f /tmp/deploy_tmp.sh
 
 ################################################################################
 # RESTART SERVICES
 ################################################################################
 
 log_message "Restarting services"
-service supervisor restart 2>&1 | tee -a "$LOG_FILE" || log_message "Supervisor restart failed"
-service apache2 restart 2>&1 | tee -a "$LOG_FILE" || log_message "Apache restart failed"
+service supervisor restart 2>&1 | tee -a "$LOG_FILE"
+service apache2 restart 2>&1 | tee -a "$LOG_FILE"
+
+################################################################################
+# BRING APP BACK ONLINE
+################################################################################
 
 if $TAKE_DOWN_APP; then
-  log_message "Bringing app back online"
-  php artisan up 2>&1 | tee -a "$LOG_FILE" || { log_message "Failed to bring app online"; exit 1; }
+  log_message "Bringing app back online..."
+  sudo -u "$EXEC_USER" php "$DEPLOY_DIR/artisan" up 2>&1 | tee -a "$LOG_FILE"
 fi
 
 ################################################################################
-# DISPLAY FINAL LOG
+# COMPLETION
 ################################################################################
-
-log_message "Deployment finished. Showing full log:"
-cat "$LOG_FILE"
-exit 0
