@@ -163,6 +163,19 @@ if $TAKE_DOWN_APP; then
 fi
 
 ################################################################################
+# UPLOAD LOG FILE TO S3
+################################################################################
+
+S3_BUCKET="your-log-bucket-name"
+S3_PATH="deployment-logs/$ENVIRONMENT/deployment.log"
+
+log_message "Uploading log file to s3://${S3_BUCKET}/${S3_PATH}"
+aws s3 cp "$LOG_FILE" "s3://${S3_BUCKET}/${S3_PATH}" || {
+  log_message "Failed to upload log to S3"
+  exit 1
+}
+
+################################################################################
 # FINAL LOG DUMP
 ################################################################################
 
