@@ -9,7 +9,7 @@ DEPLOY_DIR="/var/www/html"
 BACKUP_DIR="/var/www/backups"
 SERVICE_USER="sapservice"
 LOG_DIR="/var/log/app_log"
-LOG_FILE="$LOG_DIR/deployment_$(date +%Y%m%d).log"
+LOG_FILE="$LOG_DIR/deployment_$(date +%Y%m%d_%H%M%S).log"
 
 ################################################################################
 # PARAMETER VALIDATION
@@ -31,6 +31,7 @@ mkdir -p "$LOG_DIR"
 chmod 755 "$LOG_DIR"
 touch "$LOG_FILE"
 chmod 666 "$LOG_FILE"
+ln -sf "$LOG_FILE" "$LOG_DIR/latest.log"  # Symlink to latest log
 
 log_message() {
   local timestamp
@@ -58,10 +59,19 @@ fi
 
 mkdir -p "$BACKUP_DIR"
 BACKUP_FILE="$BACKUP_DIR/html_backup_$(date +%Y%m%d%H%M%S).tar.gz"
-log_message "Creating backup: $BACKUP_FILE"
+log_message "Backup started: $BACKUP_FILE"
 
 cd /var/www || { log_message "Error: Cannot cd to /var/www"; exit 1; }
-tar --exclude='html/storage' -czvf "$BACKUP_FILE" html 2>&1 | tee -a "$LOG_FILE"
+
+BACKUP_START_TIME=$(date +%Y-%m-%d_%H:%M:%S)
+
+if ! tar --exclude='html/storage' -czf "$BACKUP_FILE" html; then
+  log_message "Error: Backup failed at $BACKUP_START_TIME"
+  exit 1
+fi
+
+BACKUP_END_TIME=$(date +%Y-%m-%d_%H:%M:%S)
+log_message "Backup completed at: $BACKUP_END_TIME"
 
 ################################################################################
 # PREPARE GIT CHECKOUT COMMAND
@@ -94,7 +104,7 @@ else
 fi
 
 ################################################################################
-# TAKE APP DOWN IF NEEDED
+# APP MAINTENANCE MODE (IF NEEDED)
 ################################################################################
 
 if $TAKE_DOWN_APP; then
@@ -103,7 +113,7 @@ if $TAKE_DOWN_APP; then
 fi
 
 ################################################################################
-# DEPLOYMENT COMMANDS AS SERVICE USER
+# DEPLOYMENT EXECUTION AS sapservice OR root
 ################################################################################
 
 DEPLOY_CMDS=$(cat <<EOF
@@ -113,11 +123,11 @@ cd "$DEPLOY_DIR"
 log() {
   echo "[$(date +%Y-%m-%d_%H:%M:%S)] \$1" | tee -a "$LOG_FILE"
 }
-log "Fetching latest changes"
+log "Fetching from Git..."
 git fetch
 log "Checking out: $CHECKOUT_COMMAND"
 $CHECKOUT_COMMAND
-log "Installing dependencies"
+log "Installing composer dependencies"
 composer install --no-interaction --prefer-dist --optimize-autoloader
 log "Running migrations"
 php artisan migrate --force
@@ -131,7 +141,7 @@ EOF
 
 echo "$DEPLOY_CMDS" > /tmp/deploy_tmp.sh
 chmod +x /tmp/deploy_tmp.sh
-log_message "Executing application deployment as $EXEC_USER"
+log_message "Executing deployment as $EXEC_USER"
 sudo -u "$EXEC_USER" bash /tmp/deploy_tmp.sh || { log_message "Deployment failed"; exit 1; }
 rm -f /tmp/deploy_tmp.sh
 
@@ -148,10 +158,14 @@ service apache2 restart 2>&1 | tee -a "$LOG_FILE"
 ################################################################################
 
 if $TAKE_DOWN_APP; then
-  log_message "Bringing app back online..."
+  log_message "Bringing app out of maintenance mode..."
   sudo -u "$EXEC_USER" php "$DEPLOY_DIR/artisan" up 2>&1 | tee -a "$LOG_FILE"
 fi
 
 ################################################################################
-# COMPLETION
+# FINAL LOG DUMP
 ################################################################################
+
+log_message "Deployment complete. Showing full log:"
+cat "$LOG_FILE"
+exit 0
