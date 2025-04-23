@@ -1,0 +1,91 @@
+#!/bin/bash
+set -e # Exit immediately on error
+
+# === Script Parameters (Passed from SSM Run Command) ===
+EFS_FS_ID="$1"    # e.g., fs-0123456789abcdef0
+AWS_REGION="$2"   # e.g., us-east-1
+MOUNT_POINT="$3"  # e.g., /mnt/efs-app or /var/www/shared
+
+# === Logging ===
+LOG_FILE="/var/log/mount_efs_$(date +%Y%m%d_%H%M%S).log"
+log_message() {
+  local timestamp
+  timestamp=$(date +%Y-%m-%d_%H:%M:%S)
+  echo "[$timestamp] $1" | tee -a "$LOG_FILE"
+}
+
+# === Start Execution ===
+log_message "Starting EFS mount script via SSM..."
+log_message "  EFS_FS_ID: $EFS_FS_ID"
+log_message "  AWS_REGION: $AWS_REGION"
+log_message "  MOUNT_POINT: $MOUNT_POINT"
+
+# Validate input parameters
+if [[ -z "$EFS_FS_ID" || -z "$AWS_REGION" || -z "$MOUNT_POINT" ]]; then
+  log_message "ERROR: Missing required parameters: EFS_FS_ID, AWS_REGION, MOUNT_POINT"
+  exit 1
+fi
+
+# === Install NFS Client ===
+if ! dpkg -s nfs-common > /dev/null 2>&1; then
+  log_message "Installing nfs-common..."
+  apt-get update -y >> "$LOG_FILE" 2>&1
+  apt-get install -y nfs-common >> "$LOG_FILE" 2>&1
+  log_message "nfs-common installed."
+else
+  log_message "nfs-common already installed."
+fi
+
+# === Create Mount Point ===
+if [ ! -d "$MOUNT_POINT" ]; then
+  log_message "Creating mount point directory: $MOUNT_POINT"
+  mkdir -p "$MOUNT_POINT"
+else
+  log_message "Mount point directory already exists: $MOUNT_POINT"
+fi
+
+# === Prepare fstab Entry ===
+# Use EFS Mount Helper recommendations for options
+EFS_DNS_NAME="${EFS_FS_ID}.efs.${AWS_REGION}.amazonaws.com"
+FSTAB_ENTRY="${EFS_DNS_NAME}:/ ${MOUNT_POINT} nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport,_netdev 0 0"
+
+# === Update /etc/fstab (Idempotent) ===
+if grep -qF -- "$MOUNT_POINT" /etc/fstab; then
+  # Entry for the mount point exists, check if it's the correct one
+  if grep -qF -- "$FSTAB_ENTRY" /etc/fstab; then
+    log_message "/etc/fstab entry already exists and is correct."
+  else
+    log_message "WARNING: /etc/fstab entry exists for $MOUNT_POINT but differs. Manual check recommended. Attempting to mount anyway."
+    # Consider adding logic here to replace the incorrect line if desired
+  fi
+else
+  log_message "Adding entry to /etc/fstab..."
+  echo "$FSTAB_ENTRY" >> /etc/fstab
+  log_message "Entry added."
+fi
+
+# === Mount Filesystem (Idempotent) ===
+if mountpoint -q "$MOUNT_POINT"; then
+  log_message "EFS already mounted at $MOUNT_POINT."
+else
+  log_message "Attempting to mount ${MOUNT_POINT} using 'mount -a'..."
+  # 'mount -a' reads fstab and mounts entries not already mounted
+  mount -a -t nfs4 >> "$LOG_FILE" 2>&1
+fi
+
+# === Verify Mount ===
+if mountpoint -q "$MOUNT_POINT"; then
+  log_message "SUCCESS: EFS successfully mounted at $MOUNT_POINT."
+  log_message "Filesystem details:"
+  df -hT "$MOUNT_POINT" | tee -a "$LOG_FILE"
+
+  # ACTION: Set ownership/permissions on the mount point if needed
+  # log_message "Setting ownership on ${MOUNT_POINT}..."
+  # chown www-data:www-data "${MOUNT_POINT}" # Example for web server user
+
+  log_message "EFS mount script finished successfully."
+  exit 0
+else
+  log_message "ERROR: Failed to mount EFS at ${MOUNT_POINT} after attempting. Check NFS client, fstab, security groups, and EFS mount target status."
+  exit 1
+fi
