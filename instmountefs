@@ -1,0 +1,91 @@
+Step 3: Execute SSM Run Command
+
+You can trigger this using the AWS Console or AWS CLI. Run this command twice: once targeting CRM instances, once targeting Clover instances.
+
+Method 3.1: Using AWS Console
+
+Navigate to AWS Systems Manager -> Run Command (under Node Management).
+Click Run command.
+Command document: Search for and select AWS-RunShellScript.
+Command parameters:
+commands: Paste the entire content of your mount_efs.sh script here.
+Targets:
+Choose Specify instance tags.
+Enter tags to identify the instances. For the first run:
+Tag key: Application, Tag value: crm
+Tag key: Environment, Tag value: dev (or your target environment)
+(Repeat this step later for Application=clover)
+Other parameters:
+Parameters (for the script itself): This section appears below the main commands box. You need to pass the arguments $1, $2, $3 to the script.
+Enter the EFS File System ID (from Step 1) as the first parameter value.
+Enter the AWS Region (e.g., us-east-1) as the second parameter value.
+Enter the desired mount point path (e.g., /mnt/efs-app or /var/www/shared) as the third parameter value. (Note: The Console UI for passing parameters to the script within the commands box can be tricky. An alternative is to hardcode EFS_FS_ID, AWS_REGION, MOUNT_POINT in the script pasted into commands, but using parameters is cleaner if the UI supports it well for AWS-RunShellScript). Using the CLI (Method 3.2) is often easier for passing parameters.
+Output options: (Optional) Specify an S3 bucket to store detailed command output logs.
+Click Run.
+Repeat steps 1-8, changing the target tag Application to clover.
+Method 3.2: Using AWS CLI (Recommended for Scripting/Automation)
+
+Get EFS ID and Region:
+
+bash
+EFS_ID=$(terraform output -raw efs_id)
+AWS_REGION=$(terraform output -raw aws_region) # Assuming you have an aws_region output
+# Or set manually: AWS_REGION="us-east-1"
+TARGET_ENV="dev" # Or your target environment
+MOUNT_POINT="/mnt/efs-app" # Or your desired mount point
+Run for CRM Instances:
+
+bash
+aws ssm send-command \
+  --document-name "AWS-RunShellScript" \
+  --targets "Key=tag:Application,Values=crm" "Key=tag:Environment,Values=${TARGET_ENV}" \
+  --parameters "commands=[
+      '#!/bin/bash',
+      'set -e',
+      'EFS_FS_ID=\"${EFS_ID}\"',
+      'AWS_REGION=\"${AWS_REGION}\"',
+      'MOUNT_POINT=\"${MOUNT_POINT}\"',
+      'LOG_FILE=\"/var/log/mount_efs_\$(date +%Y%m%d_%H%M%S).log\"',
+      'log_message() { local timestamp=\$(date +%Y-%m-%d_%H:%M:%S); echo \"[\$timestamp] \$1\" | tee -a \"\$LOG_FILE\"; }',
+      'log_message \"Starting EFS mount script via SSM...\"',
+      'log_message \"  EFS_FS_ID: \$EFS_FS_ID\"',
+      'log_message \"  AWS_REGION: \$AWS_REGION\"',
+      'log_message \"  MOUNT_POINT: \$MOUNT_POINT\"',
+      'if [[ -z \"\$EFS_FS_ID\" || -z \"\$AWS_REGION\" || -z \"\$MOUNT_POINT\" ]]; then log_message \"ERROR: Missing required parameters\"; exit 1; fi',
+      'if ! dpkg -s nfs-common > /dev/null 2>&1; then log_message \"Installing nfs-common...\"; apt-get update -y >> \"\$LOG_FILE\" 2>&1; apt-get install -y nfs-common >> \"\$LOG_FILE\" 2>&1; else log_message \"nfs-common already installed.\"; fi',
+      'if [ ! -d \"\$MOUNT_POINT\" ]; then log_message \"Creating mount point directory: \$MOUNT_POINT\"; mkdir -p \"\$MOUNT_POINT\"; else log_message \"Mount point directory already exists: \$MOUNT_POINT\"; fi',
+      'EFS_DNS_NAME=\"\${EFS_FS_ID}.efs.\${AWS_REGION}.amazonaws.com\"',
+      'FSTAB_ENTRY=\"\${EFS_DNS_NAME}:/ \${MOUNT_POINT} nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport,_netdev 0 0\"',
+      'if grep -qF -- \"\$MOUNT_POINT\" /etc/fstab; then if grep -qF -- \"\$FSTAB_ENTRY\" /etc/fstab; then log_message \"/etc/fstab entry already exists and is correct.\"; else log_message \"WARNING: /etc/fstab entry exists for \$MOUNT_POINT but differs.\"; fi; else log_message \"Adding entry to /etc/fstab...\"; echo \"\$FSTAB_ENTRY\" >> /etc/fstab; fi',
+      'if mountpoint -q \"\$MOUNT_POINT\"; then log_message \"EFS already mounted at \$MOUNT_POINT\"; else log_message \"Attempting to mount \${MOUNT_POINT} using '\''mount -a'\''...\"; mount -a -t nfs4 >> \"\$LOG_FILE\" 2>&1; fi',
+      'if mountpoint -q \"\$MOUNT_POINT\"; then log_message \"SUCCESS: EFS successfully mounted at \$MOUNT_POINT\"; df -hT \"\$MOUNT_POINT\" | tee -a \"\$LOG_FILE\"; log_message \"EFS mount script finished successfully.\"; exit 0; else log_message \"ERROR: Failed to mount EFS at \${MOUNT_POINT}.\"; exit 1; fi'
+  ]" \
+  --comment "Mount EFS ${EFS_ID} on CRM instances" \
+  --region "${AWS_REGION}" \
+  --output json # Or text
+(Note: Passing the script inline like this requires careful escaping if the script gets more complex. Uploading to S3 and calling aws s3 cp && /tmp/script.sh within commands might be cleaner for very long scripts).
+
+Run for Clover Instances: Repeat the aws ssm send-command above, changing Values=crm to Values=clover and updating the --comment.
+
+Step 4: Verification
+
+Check Run Command Status: In the SSM Console -> Run Command history, find your command executions. Check their status (Success, Failed). Click on an instance ID to see the detailed output/error logs captured by SSM.
+Check Mount on Instance: SSH into one of the CRM or Clover instances.
+Run df -hT | grep nfs4 or df -hT ${MOUNT_POINT}. You should see the EFS filesystem mounted with the correct type and size.
+Run mount | grep efs. You should see the mount entry with the options specified in /etc/fstab.
+Check Script Log: Check the log file created by the script on the instance (e.g., /var/log/mount_efs_*.log) for detailed steps and potential errors.
+Step 5: Automation (CI/CD Integration)
+
+In your CI/CD pipeline (e.g., Azure Pipelines, GitHub Actions):
+Add a step after the terraform apply step.
+Use the AWS CLI task/action.
+Retrieve the efs_id and aws_region from Terraform outputs.
+Execute the aws ssm send-command CLI commands (from Step 3.2) for both CRM and Clover targets, substituting the retrieved outputs.
+Consider adding waits or checks for the Run Command completion status within the pipeline.
+Important Considerations:
+
+Idempotency: The provided script attempts to be idempotent (safe to run multiple times) by checking if the NFS client is installed, if the mount point exists, if the fstab entry exists, and if the filesystem is already mounted.
+Error Handling: The script uses set -e and checks the final mount status. Review the log files (/var/log/mount_efs_*.log on the instance or the SSM output) if errors occur.
+Permissions: The script uses apt-get, modifies /etc/fstab, and runs mount, which typically require root privileges. SSM Run Command usually executes as root by default. Ensure the final mount point permissions (chown, chmod) are set correctly for your application user (e.g., www-data) if needed (uncomment and adjust the relevant lines in the script).
+Mount Point: Choose a suitable and consistent mount point path (e.g., /mnt/efs-app, /var/www/shared) and ensure your application is configured to use it.
+Region: Ensure the correct AWS region is used when fetching the EFS DNS name and running the SSM command.
