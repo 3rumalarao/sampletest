@@ -1,21 +1,21 @@
 #!/bin/bash
 set -e # Exit immediately if a command exits with a non-zero status.
 
-# Read parameters passed as environment variables from the pipeline task
-# We expect ACTION and TARGET_SELECTION env vars to be set by the task's 'env:' block
-PARAM_ACTION="$ACTION"
-PARAM_TARGET_SELECTION="$TARGET_SELECTION"
-# AWSREGION should be available automatically from pipeline variables or passed via env:
-PARAM_AWS_REGION="$AWSREGION"
+# Read parameters passed as command-line arguments
+# $1 = action (e.g., "start" or "stop")
+# $2 = targetSelection (e.g., "AllServers" or "APP_METER")
+# $3 = awsRegion (e.g., "us-east-1")
 
-# Validate required environment variables were passed
-if [ -z "$PARAM_ACTION" ] || [ -z "$PARAM_TARGET_SELECTION" ] || [ -z "$PARAM_AWS_REGION" ]; then
-  echo "##[error]Required environment variables (ACTION, TARGET_SELECTION, AWSREGION) were not correctly passed to the script."
-  echo "ACTION: $PARAM_ACTION"
-  echo "TARGET_SELECTION: $PARAM_TARGET_SELECTION"
-  echo "AWSREGION: $PARAM_AWS_REGION"
-  exit 1
+# Validate that the correct number of arguments were passed
+if [ "$#" -ne 3 ]; then
+    echo "##[error]Usage: $0 <action> <targetSelection> <awsRegion>"
+    echo "##[error]Received $# arguments: $@"
+    exit 1
 fi
+
+PARAM_ACTION="$1"
+PARAM_TARGET_SELECTION="$2"
+PARAM_AWS_REGION="$3"
 
 echo "Script executing with Action: $PARAM_ACTION"
 echo "Target Selection Key: $PARAM_TARGET_SELECTION"
@@ -40,7 +40,8 @@ ENV_VAR_NAME=$(echo "$VAR_NAME_TO_LOOKUP" | tr '[:lower:]' '[:upper:]')
 echo "Looking for environment variable: $ENV_VAR_NAME (derived from Variable Group)"
 
 # Retrieve the instance IDs from the environment variable (populated by the Variable Group)
-# Using printenv is a reliable way to get the value
+# Using printenv is a reliable way to get the value. Variable Group variables are still
+# expected to be available as environment variables automatically.
 TARGET_INSTANCE_IDS=$(printenv "$ENV_VAR_NAME")
 
 # Validate if the instance IDs were found
@@ -60,4 +61,3 @@ echo "Executing: aws ec2 ${PARAM_ACTION}-instances --instance-ids ${TARGET_INSTA
 aws ec2 ${PARAM_ACTION}-instances --instance-ids ${TARGET_INSTANCE_IDS} --region ${PARAM_AWS_REGION}
 
 echo "AWS CLI command executed successfully for action '$PARAM_ACTION' on '$PARAM_TARGET_SELECTION'."
-
