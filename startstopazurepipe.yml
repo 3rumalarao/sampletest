@@ -1,0 +1,49 @@
+trigger: none # Manual trigger only
+
+pool:
+  vmImage: 'ubuntu-latest' # Using a standard Microsoft-hosted agent
+
+parameters:
+  - name: action
+    displayName: 'Action to Perform'
+    type: string
+    default: start
+    values:
+      - start
+      - stop
+  - name: targetSelection
+    displayName: 'Select Target Server(s)'
+    type: string
+    default: AllServers
+    values: # --- ADD YOUR NEW KEY HERE ---
+      - AllServers
+      - App1_WebServer01 # Existing example
+      - App1_WebServer02 # Existing example
+      - App2_Database    # Existing example
+      - APP_METER        # <-- Add the key for your new mapping
+
+      # Add other friendly keys corresponding to your Variable Group variables
+
+variables:
+  # Link the Variable Group - Variables within it become available as environment variables
+  - group: AWSInstanceMappings # <-- UPDATE if your Variable Group name is different
+
+  # Define AWS Region - Or move this into the Variable Group too
+  - name: awsRegion # This variable is still useful for the task input and passing to env
+    value: 'us-east-1' # <-- UPDATE with your AWS region
+
+steps:
+  - task: AWSShellScript@1
+    displayName: 'Start/Stop EC2 Instances'
+    inputs:
+      awsCredentials: 'MyAWSConnection'     # <-- UPDATE with your AWS Service Connection name
+      regionName: $(awsRegion)             # Sets the region context for the task/CLI if needed
+      scriptType: 'bash'                    # Specify the script interpreter
+      filePath: 'scripts/manage-ec2-instances.sh' # Path to your script file
+      arguments: >-                         # Pass parameters as command-line arguments
+        "${{ parameters.action }}"
+        "${{ parameters.targetSelection }}"
+        "$(awsRegion)"
+      failOnStandardError: true           # Recommended setting
+      # workingDirectory:                 # Optional: Set if script needs specific CWD
+      # disableAutoCwd:                   # Optional: Set to true if you DON'T want CWD changed to script dir
